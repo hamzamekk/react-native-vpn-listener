@@ -1,5 +1,5 @@
 #import <VpnListenerSpec/VpnListenerSpec.h>
 
-@interface VpnListener : NSObject <NativeVpnListenerSpec>
+@interface VpnListener : NativeVpnListenerSpecBase <NativeVpnListenerSpec>
 
 @end
