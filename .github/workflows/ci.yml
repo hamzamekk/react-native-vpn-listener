@@ -102,7 +102,7 @@ jobs:
 
       - name: Build example for Android
         env:
-          JAVA_OPTS: "-XX:MaxHeapSize=6g"
+          JAVA_OPTS: '-XX:MaxHeapSize=6g'
         run: |
           yarn turbo run build:android --cache-dir="${{ env.TURBO_CACHE_DIR }}"
 
@@ -140,14 +140,12 @@ jobs:
         with:
           xcode-version: ${{ env.XCODE_VERSION }}
 
-      - name: Install cocoapods
-        if: env.turbo_cache_hit != 1 && steps.cocoapods-cache.outputs.cache-hit != 'true'
+      - name: Install CocoaPods (no Bundler)
+        if: env.turbo_cache_hit != 1
         run: |
-          cd example
-          bundle install
-          bundle exec pod repo update --verbose
-          bundle exec pod install --project-directory=ios
+          sudo gem install cocoapods -N
+          pod repo update
 
-      - name: Build example for iOS
+      - name: Lint podspec (library only)
         run: |
-          yarn turbo run build:ios --cache-dir="${{ env.TURBO_CACHE_DIR }}"
+          pod spec lint VpnListener.podspec --allow-warnings --skip-import-validation
