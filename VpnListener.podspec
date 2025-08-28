@@ -17,6 +17,17 @@ Pod::Spec.new do |s|
   s.private_header_files = "ios/**/*.h"
   # No additional system frameworks required
 
-
-  install_modules_dependencies(s)
+  # React Native helper isn't available during `pod spec lint`.
+  # Use it if present; otherwise declare minimal dependencies explicitly.
+  if defined?(install_modules_dependencies)
+    install_modules_dependencies(s)
+  else
+    s.dependency "React-Core"
+    s.dependency "React-Codegen"
+    s.dependency "RCTRequired"
+    s.dependency "RCTTypeSafety"
+    s.dependency "ReactCommon/turbomodule/core"
+    s.dependency "FBLazyVector"
+    s.dependency "RCT-Folly"
+  end
 end
