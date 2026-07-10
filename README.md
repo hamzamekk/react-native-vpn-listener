@@ -2,7 +2,7 @@
 
 Reliable, event‑driven VPN detection for React Native — on **both** platforms. Know instantly when your users connect or disconnect a VPN, with connection details, not just a boolean.
 
-![npm](https://img.shields.io/npm/v/react-native-vpn-listener) ![license](https://img.shields.io/npm/l/react-native-vpn-listener) ![platforms](https://img.shields.io/badge/platforms-ios%20%7C%20android-blue)
+[![npm](https://img.shields.io/npm/v/react-native-vpn-listener)](https://www.npmjs.com/package/react-native-vpn-listener) [![license](https://img.shields.io/github/license/hamzamekk/react-native-vpn-listener)](https://github.com/hamzamekk/react-native-vpn-listener/blob/main/LICENSE) ![platforms](https://img.shields.io/badge/platforms-ios%20%7C%20android-blue)
 
 Built for apps where VPN state actually matters:
 
