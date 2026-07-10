@@ -1,32 +1,51 @@
 # react-native-vpn-listener
 
-Detect VPN connectivity on iOS and Android using React Native’s New Architecture (TurboModule + codegen). Minimal API, typed results, and an event for status changes.
+Reliable, event‑driven VPN detection for React Native — on **both** platforms. Know instantly when your users connect or disconnect a VPN, with connection details, not just a boolean.
 
 ![npm](https://img.shields.io/npm/v/react-native-vpn-listener) ![license](https://img.shields.io/npm/l/react-native-vpn-listener) ![platforms](https://img.shields.io/badge/platforms-ios%20%7C%20android-blue)
 
+Built for apps where VPN state actually matters:
+
+- 🎬 **Streaming / media** — geo‑licensing compliance
+- 💳 **Fintech & payments** — fraud signals, risk scoring
+- 🎰 **Betting / gambling** — regulatory geo‑fencing
+- 🏢 **Security & MDM** — enforce or verify VPN posture
+
 ## ✨ Features
 
-- ⚡ New Architecture TurboModule (fast, typed, codegen‑driven)
-- 📱 Cross‑platform with a single JS API
-- 🔔 Truly event‑driven on both platforms (`NWPathMonitor` on iOS, `ConnectivityManager` callbacks on Android — no polling)
+- 🔔 Truly event‑driven on both platforms (`NWPathMonitor` on iOS, `ConnectivityManager` callbacks on Android — no polling, no battery drain)
 - 🪝 `useVpnStatus()` React hook for one‑line integration
-- 🧪 Strong TypeScript types
-- 🛡 Public APIs only on iOS; best‑effort details on Android
+- 📱 One JS API, both platforms — including iOS, where most alternatives fall short
+- 🔍 Details, not just a boolean: interface, addresses, DNS (best‑effort, honestly typed per platform)
+- ⚡ New Architecture TurboModule (fast, typed, codegen‑driven)
+- 🛡 Public APIs only — no private API risk for App Store review
+
+## 🥊 Comparison
+
+|                                     | react-native-vpn-listener | @react-native-community/netinfo | react-native-vpn-detector | react-native-vpn-status |
+| ----------------------------------- | ------------------------- | ------------------------------- | ------------------------- | ----------------------- |
+| VPN detection on Android            | ✅                        | ✅                              | ✅                        | ✅                      |
+| VPN detection on iOS                | ✅                        | ❌                              | ✅                        | ✅                      |
+| Live change events                  | ✅ event‑driven           | ✅                              | ❌ one‑shot check         | ✅                      |
+| Connection details (interface, IPs) | ✅                        | ❌                              | ❌ boolean only           | ❌                      |
+| React hook                          | ✅ `useVpnStatus()`       | ✅                              | ❌                        | ❌                      |
+| New Architecture (TurboModule)      | ✅ native                 | ➖ interop                      | ❌ old architecture       | ❌ old architecture     |
 
 ## ✅ Requirements
 
-| Runtime      | Minimum                               |
-| ------------ | ------------------------------------- |
-| React Native | 0.75+ (New Architecture required)     |
-| iOS          | 13.4+                                 |
-| Android      | minSdk 21+                            |
-| Expo         | Dev Client / EAS builds (not Expo Go) |
+| Runtime      | Minimum                                         |
+| ------------ | ----------------------------------------------- |
+| React Native | 0.80+ (New Architecture required; tested on 0.86) |
+| iOS          | 13.4+                                           |
+| Android      | minSdk 24+                                      |
+| Expo         | Dev Client / EAS builds (not Expo Go)           |
 
 ## 📦 Installation
 
 ```bash
-# npm	npm install react-native-vpn-listener
-# yarn	yarn add react-native-vpn-listener
+npm install react-native-vpn-listener
+# or
+yarn add react-native-vpn-listener
 ```
 
 ### iOS
