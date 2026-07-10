@@ -7,11 +7,10 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
-import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.WritableMap
-import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.module.annotations.ReactModule
+import java.util.Collections
 
 @ReactModule(name = VpnListenerModule.NAME)
 class VpnListenerModule(reactContext: ReactApplicationContext) :
@@ -22,9 +21,15 @@ class VpnListenerModule(reactContext: ReactApplicationContext) :
   }
 
   private val appContext: ReactApplicationContext = reactContext
-  private var hasListeners: Boolean = false
   private var registeredDefault: Boolean = false
   private var registeredVpnOnly: Boolean = false
+
+  /** VPN networks currently reported available by the vpn-only callback. */
+  private val vpnNetworks: MutableSet<Network> =
+    Collections.synchronizedSet(mutableSetOf())
+
+  /** Key of the last emitted snapshot, used to drop no-op events. */
+  private var lastEmittedKey: String? = null
 
   /**
    * Module name exposed to React Native. Kept for clarity alongside codegen.
@@ -36,23 +41,42 @@ class VpnListenerModule(reactContext: ReactApplicationContext) :
 
   private val vpnRequest: NetworkRequest = NetworkRequest.Builder()
     .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
+    .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
     .build()
 
+  /** Tracks VPN networks coming and going. */
   private val vpnCallback = object : ConnectivityManager.NetworkCallback() {
-    override fun onAvailable(network: Network) = emitSnapshot()
-    override fun onLost(network: Network) = emitSnapshot()
-    override fun onCapabilitiesChanged(n: Network, c: NetworkCapabilities) = emitSnapshot()
+    override fun onAvailable(network: Network) {
+      vpnNetworks.add(network)
+      emitSnapshot()
+    }
+
+    override fun onLost(network: Network) {
+      vpnNetworks.remove(network)
+      emitSnapshot()
+    }
+
     override fun onLinkPropertiesChanged(n: Network, lp: LinkProperties) = emitSnapshot()
   }
 
   /**
+   * Watches the default network so we also catch VPNs that become the default
+   * route; snapshot dedupe drops unrelated wifi/cell transitions.
+   */
+  private val defaultCallback = object : ConnectivityManager.NetworkCallback() {
+    override fun onAvailable(network: Network) = emitSnapshot()
+    override fun onLost(network: Network) = emitSnapshot()
+    override fun onCapabilitiesChanged(n: Network, c: NetworkCapabilities) = emitSnapshot()
+  }
+
+  /**
    * Called when the module is initialized. Register callbacks up front; emission is guarded
-   * by hasActiveCatalystInstance() so there's no early crash before JS is ready.
+   * by hasActiveReactInstance() so there's no early crash before JS is ready.
    */
   override fun initialize() {
     super.initialize()
     if (!registeredDefault) {
-      runCatching { cm.registerDefaultNetworkCallback(vpnCallback) }
+      runCatching { cm.registerDefaultNetworkCallback(defaultCallback) }
         .onSuccess { registeredDefault = true }
     }
     if (!registeredVpnOnly) {
@@ -84,60 +108,62 @@ class VpnListenerModule(reactContext: ReactApplicationContext) :
   }
 
   // ---- Helpers ----
-  /**
-   * Required by NativeEventEmitter. Marks that JS subscribed and pushes first snapshot.
-   */
-  @ReactMethod
-  fun addListener(eventName: String) {
-    hasListeners = true
-    emitSnapshot()
-  }
 
   /**
-   * Required by NativeEventEmitter. Marks that JS unsubscribed.
-   */
-  @ReactMethod
-  fun removeListeners(count: Int) {
-    hasListeners = false
-  }
-
-  /**
-   * Best-effort unregister of the connectivity callback.
+   * Best-effort unregister of the connectivity callbacks.
    */
   private fun safeUnregister() {
     if (registeredDefault) {
-      runCatching { cm.unregisterNetworkCallback(vpnCallback) }
+      runCatching { cm.unregisterNetworkCallback(defaultCallback) }
         .onSuccess { registeredDefault = false }
     }
     if (registeredVpnOnly) {
       runCatching { cm.unregisterNetworkCallback(vpnCallback) }
         .onSuccess { registeredVpnOnly = false }
     }
+    vpnNetworks.clear()
   }
 
   /**
-   * Emits an onStatusChanged event if the React instance is active and JS is listening.
+   * Emits an onStatusChanged event if the React instance is active and the
+   * snapshot meaningfully differs from the last one emitted (drops timestamp-only
+   * changes and unrelated wifi/cell transitions).
    */
+  @Synchronized
   private fun emitSnapshot() {
-    if (!appContext.hasActiveCatalystInstance()) return
-    runCatching { emitOnStatusChanged(buildVpnInfo()) }.onFailure { /* ignore */ }
+    if (!appContext.hasActiveReactInstance()) return
+    val info = buildVpnInfo()
+    val key = listOf(
+      info.getBoolean("active"),
+      info.getString("type"),
+      info.getString("interfaceName"),
+      info.getString("localAddress")
+    ).joinToString("|")
+    if (key == lastEmittedKey) return
+    runCatching { emitOnStatusChanged(info) }
+      .onSuccess { lastEmittedKey = key }
   }
 
   /**
-   * Returns true if any active network reports VPN transport.
+   * Returns true if a VPN network is currently up.
    */
-  private fun isVpnUp(): Boolean =
-    cm.allNetworks.any { n ->
-      cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
-    }
+  private fun isVpnUp(): Boolean = currentVpnNetwork() != null
 
   /**
-   * Finds the first active network that has VPN transport, if any.
+   * Finds the current VPN network, if any: prefer networks tracked by the
+   * vpn-only callback, fall back to checking the default network's transport.
    */
-  private fun currentVpnNetwork(): Network? =
-    cm.allNetworks.firstOrNull { n ->
+  private fun currentVpnNetwork(): Network? {
+    synchronized(vpnNetworks) {
+      val tracked = vpnNetworks.firstOrNull { n ->
+        cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+      }
+      if (tracked != null) return tracked
+    }
+    return cm.activeNetwork?.takeIf { n ->
       cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
     }
+  }
 
   /**
    * Builds the data map describing VPN state, interface, addresses, DNS, and timestamps.
@@ -151,7 +177,7 @@ class VpnListenerModule(reactContext: ReactApplicationContext) :
     val type = inferType(interfaceName)
 
     val localAddress = lp?.linkAddresses?.firstOrNull()?.address?.hostAddress
-    val dns = (lp?.dnsServers ?: emptyList()).map { it.hostAddress }
+    val dns = (lp?.dnsServers ?: emptyList()).mapNotNull { it.hostAddress }
     val remoteAddress = lp?.routes
       ?.firstOrNull { it.isDefaultRoute }
       ?.gateway

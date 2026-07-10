@@ -1,6 +1,6 @@
 {
   "name": "react-native-vpn-listener",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "A React Native library that provides a unified, cross-platform way to detect VPN connectivity on iOS and Android using the New Architecture (TurboModules with codegen).",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",

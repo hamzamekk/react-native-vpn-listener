@@ -15,7 +15,7 @@ Pod::Spec.new do |s|
 
   s.source_files = "ios/**/*.{h,m,mm,cpp}"
   s.private_header_files = "ios/**/*.h"
-  # No additional system frameworks required
+  s.frameworks = "Network"
 
   # React Native helper isn't available during `pod spec lint`.
   # Use it if present; otherwise declare minimal dependencies explicitly.
