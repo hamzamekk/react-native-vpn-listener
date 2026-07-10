@@ -8,7 +8,7 @@ Built for apps where VPN state actually matters:
 
 - 🎬 **Streaming / media** — geo‑licensing compliance
 - 💳 **Fintech & payments** — fraud signals, risk scoring
-- 🎰 **Betting / gambling** — regulatory geo‑fencing
+- 🛒 **E‑commerce & ticketing** — regional pricing & catalog abuse prevention
 - 🏢 **Security & MDM** — enforce or verify VPN posture
 
 ## ✨ Features
