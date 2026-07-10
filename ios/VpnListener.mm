@@ -4,12 +4,12 @@
 #import <net/if.h>
 #import <netdb.h>
 #import <sys/socket.h>
-#import <TargetConditionals.h>
+#import <Network/Network.h>
 #import <TargetConditionals.h>
 
 @implementation VpnListener {
-  dispatch_source_t _timer;
-  BOOL _hasListeners;
+  nw_path_monitor_t _pathMonitor;
+  dispatch_queue_t _monitorQueue;
   BOOL _eventEmitterReady;
   NSDictionary *_pendingInitialSnapshot;
   NSDictionary *_lastEmittedSnapshot;
@@ -19,17 +19,16 @@ RCT_EXPORT_MODULE()
 
 #pragma mark - Init
 
-
 - (instancetype)init
 {
   if ((self = [super init])) {
-    _hasListeners = NO;
-    _timer = NULL;
+    _pathMonitor = NULL;
+    _monitorQueue = NULL;
     _eventEmitterReady = NO;
     _pendingInitialSnapshot = nil;
     _lastEmittedSnapshot = nil;
-    [self startTimerIfNeeded];
-    // Precompute initial snapshot; will be emitted once the emitter is ready and JS subscribed
+    [self startMonitorIfNeeded];
+    // Precompute initial snapshot; will be emitted once the emitter is ready
     _pendingInitialSnapshot = [self buildVpnInfo];
   }
   return self;
@@ -44,8 +43,7 @@ RCT_EXPORT_MODULE()
 }
 
 - (void)dealloc {
-  // Cleanup background timer
-  [self stopTimer];
+  [self stopMonitor];
 }
 
 // Called by the runtime when the JS event emitter is ready. We then flush
@@ -55,10 +53,11 @@ RCT_EXPORT_MODULE()
   [super setEventEmitterCallback:eventEmitterCallbackWrapper];
   _eventEmitterReady = YES;
   if (_pendingInitialSnapshot != nil) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-      [self emitIfMeaningful:_pendingInitialSnapshot];
-    });
+    NSDictionary *snapshot = _pendingInitialSnapshot;
     _pendingInitialSnapshot = nil;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self emitIfMeaningful:snapshot];
+    });
   }
 }
 
@@ -80,44 +79,18 @@ RCT_EXPORT_MODULE()
   resolve([self buildVpnInfo]);
 }
 
-#pragma mark - Event wiring (NativeEventEmitter semantics)
+#pragma mark - Event-driven updates (NWPathMonitor)
 
-// JS subscribed. Start timer if needed and emit an initial snapshot when ready.
-- (void)addListener:(NSString *)eventName
+// Starts an NWPathMonitor that fires whenever the network path changes
+// (VPN up/down, interface changes). No polling.
+- (void)startMonitorIfNeeded
 {
-  _hasListeners = YES;
-  [self startTimerIfNeeded];
-  NSDictionary *snapshot = [self buildVpnInfo];
-  if (_eventEmitterReady) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-      [self emitIfMeaningful:snapshot];
-    });
-  } else {
-    _pendingInitialSnapshot = snapshot;
-  }
-}
-
-- (void)removeListeners:(double)count
-{
-  _hasListeners = NO;
-  // Keep monitor running; it's lightweight. If you want to stop, uncomment:
-  // [self stopMonitor];
-}
-
-#pragma mark - Timer-based updates
-
-// Starts a periodic GCD timer (~2s) to sample current VPN info and emit
-// to JS if the emitter is ready and a meaningful change is detected.
-- (void)startTimerIfNeeded
-{
-  if (_timer != NULL) return;
-  dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
-  _timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
-  if (_timer == NULL) return;
-  uint64_t intervalNs = (uint64_t)(2.0 * NSEC_PER_SEC);
-  dispatch_source_set_timer(_timer, dispatch_time(DISPATCH_TIME_NOW, intervalNs), intervalNs, (uint64_t)(0.2 * NSEC_PER_SEC));
+  if (_pathMonitor != NULL) return;
+  _monitorQueue = dispatch_queue_create("com.vpnlistener.pathmonitor", DISPATCH_QUEUE_SERIAL);
+  _pathMonitor = nw_path_monitor_create();
+  if (_pathMonitor == NULL) return;
   __weak __typeof(self) weakSelf = self;
-  dispatch_source_set_event_handler(_timer, ^{
+  nw_path_monitor_set_update_handler(_pathMonitor, ^(nw_path_t path) {
     __strong __typeof(weakSelf) self = weakSelf;
     if (!self || !self->_eventEmitterReady) return;
     NSDictionary *snap = [self buildVpnInfo];
@@ -125,51 +98,30 @@ RCT_EXPORT_MODULE()
       [self emitIfMeaningful:snap];
     });
   });
-  dispatch_resume(_timer);
+  nw_path_monitor_set_queue(_pathMonitor, _monitorQueue);
+  nw_path_monitor_start(_pathMonitor);
 }
 
-- (void)stopTimer
+- (void)stopMonitor
 {
-  if (_timer != NULL) {
-    dispatch_source_cancel(_timer);
-    _timer = NULL;
+  if (_pathMonitor != NULL) {
+    nw_path_monitor_cancel(_pathMonitor);
+    _pathMonitor = NULL;
+    _monitorQueue = NULL;
   }
 }
 
 #pragma mark - Helpers
 
 // Heuristic: active only if a VPN-ish interface (utun/ppp/ipsec) is UP+RUNNING
-// and has a private IPv4 address (avoids iCloud Private Relay / generic utun IPv6).
+// and carries a routable address: private/CGNAT IPv4, or any non-link-local
+// IPv6 (idle system utuns only hold fe80:: link-local addresses).
 - (BOOL)isVpnUp
 {
 #if TARGET_OS_SIMULATOR
   return NO; // Simulator uses virtual interfaces (e.g., utun) that can look like VPN
 #endif
-  struct ifaddrs *interfaces = NULL;
-  BOOL active = NO;
-  if (getifaddrs(&interfaces) == 0) {
-    for (struct ifaddrs *ifa = interfaces; ifa != NULL; ifa = ifa->ifa_next) {
-      if (!ifa->ifa_name) continue;
-      NSString *name = [NSString stringWithUTF8String:ifa->ifa_name];
-      if (!([name hasPrefix:@"utun"] || [name hasPrefix:@"ppp"] || [name hasPrefix:@"ipsec"])) continue;
-      // Require interface is up and running
-      if (!(ifa->ifa_flags & IFF_UP) || !(ifa->ifa_flags & IFF_RUNNING)) continue;
-      // Require a private IPv4 address to avoid iCloud Private Relay / generic utun IPv6
-      if (ifa->ifa_addr && (ifa->ifa_addr->sa_family == AF_INET)) {
-        char host[NI_MAXHOST];
-        int result = getnameinfo(ifa->ifa_addr,
-                                 sizeof(struct sockaddr_in),
-                                 host, sizeof(host),
-                                 NULL, 0, NI_NUMERICHOST);
-        if (result == 0) {
-          NSString *ip = [NSString stringWithUTF8String:host];
-          if ([self isNonLinkLocalAddress:ip] && [self isPrivateIPv4:ip]) { active = YES; break; }
-        }
-      }
-    }
-    freeifaddrs(interfaces);
-  }
-  return active;
+  return [[[self buildVpnInfo] objectForKey:@"active"] boolValue];
 }
 
 // Builds a dictionary describing current VPN info for JS consumption. On
@@ -195,30 +147,20 @@ RCT_EXPORT_MODULE()
   struct ifaddrs *interfaces = NULL;
   if (getifaddrs(&interfaces) == 0) {
     for (struct ifaddrs *ifa = interfaces; ifa != NULL; ifa = ifa->ifa_next) {
-      if (!ifa->ifa_name) continue;
+      if (!ifa->ifa_name || !ifa->ifa_addr) continue;
       NSString *name = [NSString stringWithUTF8String:ifa->ifa_name];
       BOOL isVpnName = ([name hasPrefix:@"utun"] || [name hasPrefix:@"ppp"] || [name hasPrefix:@"ipsec"]);
       if (!isVpnName) continue;
       // Require interface is up and running
       if (!(ifa->ifa_flags & IFF_UP) || !(ifa->ifa_flags & IFF_RUNNING)) continue;
-      iface = name;
 
-      // Capture first IPv4/IPv6 address for that interface
-      if (ifa->ifa_addr && (ifa->ifa_addr->sa_family == AF_INET)) {
-        char host[NI_MAXHOST];
-        int result = getnameinfo(ifa->ifa_addr,
-                                 sizeof(struct sockaddr_in),
-                                 host, sizeof(host),
-                                 NULL, 0, NI_NUMERICHOST);
-        if (result == 0) {
-          NSString *ip = [NSString stringWithUTF8String:host];
-          if ([self isNonLinkLocalAddress:ip] && [self isPrivateIPv4:ip]) {
-            localAddress = ip;
-            active = YES;
-          }
-        }
+      NSString *ip = [self numericAddressFor:ifa];
+      if (ip != nil && [self isVpnTunnelAddress:ip]) {
+        iface = name;
+        localAddress = ip;
+        active = YES;
+        break;
       }
-      if (active) { break; }
     }
     freeifaddrs(interfaces);
   }
@@ -275,13 +217,36 @@ RCT_EXPORT_MODULE()
   [self emitOnStatusChanged:snapshot];
 }
 
-// Returns NO for link-local IPv4 (169.254.0.0/16) and IPv6 (fe80::/10)
-- (BOOL)isNonLinkLocalAddress:(NSString *)ip
+// Returns the numeric string form of an interface address (IPv4 or IPv6),
+// or nil for other families / conversion failures.
+- (NSString *)numericAddressFor:(struct ifaddrs *)ifa
+{
+  sa_family_t family = ifa->ifa_addr->sa_family;
+  if (family != AF_INET && family != AF_INET6) return nil;
+  socklen_t len = (family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+  char host[NI_MAXHOST];
+  if (getnameinfo(ifa->ifa_addr, len, host, sizeof(host), NULL, 0, NI_NUMERICHOST) != 0) {
+    return nil;
+  }
+  NSString *ip = [NSString stringWithUTF8String:host];
+  // Strip scope suffix from scoped IPv6 addresses (e.g. "fe80::1%utun0")
+  NSRange scope = [ip rangeOfString:@"%"];
+  if (scope.location != NSNotFound) {
+    ip = [ip substringToIndex:scope.location];
+  }
+  return ip;
+}
+
+// Returns YES for addresses that indicate a real VPN tunnel:
+// private/CGNAT IPv4, or any non-link-local IPv6 (ULA or global).
+// Idle system utuns only carry fe80:: link-local addresses, which are excluded.
+- (BOOL)isVpnTunnelAddress:(NSString *)ip
 {
   if (ip == nil) return NO;
   if ([ip hasPrefix:@"169.254."]) return NO; // IPv4 link-local
   if ([ip hasPrefix:@"fe80:"]) return NO;    // IPv6 link-local
-  return YES;
+  if ([ip containsString:@":"]) return YES;  // routable IPv6 (ULA/global)
+  return [self isPrivateIPv4:ip];
 }
 
 // Returns YES if the IPv4 address is private (RFC1918) or CGNAT (100.64/10)

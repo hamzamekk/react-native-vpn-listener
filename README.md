@@ -1,31 +1,51 @@
 # react-native-vpn-listener
 
-Detect VPN connectivity on iOS and Android using React Native’s New Architecture (TurboModule + codegen). Minimal API, typed results, and an event for status changes.
+Reliable, event‑driven VPN detection for React Native — on **both** platforms. Know instantly when your users connect or disconnect a VPN, with connection details, not just a boolean.
 
 ![npm](https://img.shields.io/npm/v/react-native-vpn-listener) ![license](https://img.shields.io/npm/l/react-native-vpn-listener) ![platforms](https://img.shields.io/badge/platforms-ios%20%7C%20android-blue)
 
+Built for apps where VPN state actually matters:
+
+- 🎬 **Streaming / media** — geo‑licensing compliance
+- 💳 **Fintech & payments** — fraud signals, risk scoring
+- 🛒 **E‑commerce & ticketing** — regional pricing & catalog abuse prevention
+- 🏢 **Security & MDM** — enforce or verify VPN posture
+
 ## ✨ Features
 
+- 🔔 Truly event‑driven on both platforms (`NWPathMonitor` on iOS, `ConnectivityManager` callbacks on Android — no polling, no battery drain)
+- 🪝 `useVpnStatus()` React hook for one‑line integration
+- 📱 One JS API, both platforms — including iOS, where most alternatives fall short
+- 🔍 Details, not just a boolean: interface, addresses, DNS (best‑effort, honestly typed per platform)
 - ⚡ New Architecture TurboModule (fast, typed, codegen‑driven)
-- 📱 Cross‑platform with a single JS API
-- 🔔 Event‑driven updates via `onChange`
-- 🧪 Strong TypeScript types
-- 🛡 Public APIs only on iOS; best‑effort details on Android
+- 🛡 Public APIs only — no private API risk for App Store review
+
+## 🥊 Comparison
+
+|                                     | react-native-vpn-listener | @react-native-community/netinfo | react-native-vpn-detector | react-native-vpn-status |
+| ----------------------------------- | ------------------------- | ------------------------------- | ------------------------- | ----------------------- |
+| VPN detection on Android            | ✅                        | ✅                              | ✅                        | ✅                      |
+| VPN detection on iOS                | ✅                        | ❌                              | ✅                        | ✅                      |
+| Live change events                  | ✅ event‑driven           | ✅                              | ❌ one‑shot check         | ✅                      |
+| Connection details (interface, IPs) | ✅                        | ❌                              | ❌ boolean only           | ❌                      |
+| React hook                          | ✅ `useVpnStatus()`       | ✅                              | ❌                        | ❌                      |
+| New Architecture (TurboModule)      | ✅ native                 | ➖ interop                      | ❌ old architecture       | ❌ old architecture     |
 
 ## ✅ Requirements
 
-| Runtime      | Minimum                               |
-| ------------ | ------------------------------------- |
-| React Native | 0.75+ (New Architecture required)     |
-| iOS          | 13.4+                                 |
-| Android      | minSdk 21+                            |
-| Expo         | Dev Client / EAS builds (not Expo Go) |
+| Runtime      | Minimum                                         |
+| ------------ | ----------------------------------------------- |
+| React Native | 0.80+ (New Architecture required; tested on 0.86) |
+| iOS          | 13.4+                                           |
+| Android      | minSdk 24+                                      |
+| Expo         | Dev Client / EAS builds (not Expo Go)           |
 
 ## 📦 Installation
 
 ```bash
-# npm	npm install react-native-vpn-listener
-# yarn	yarn add react-native-vpn-listener
+npm install react-native-vpn-listener
+# or
+yarn add react-native-vpn-listener
 ```
 
 ### iOS
@@ -42,31 +62,11 @@ cd ios && pod install
 ## 🚀 Quick Start
 
 ```tsx
-import React, { useEffect, useState } from 'react';
 import { Text, View } from 'react-native';
-import {
-  onChange,
-  getVpnInfo,
-  isVpnActive,
-  type VpnInfo,
-} from 'react-native-vpn-listener';
+import { useVpnStatus } from 'react-native-vpn-listener';
 
 export default function App() {
-  const [vpn, setVpn] = useState<VpnInfo | null>(null);
-
-  // Subscribe to changes
-  useEffect(() => {
-    const sub = onChange((next) => setVpn(next));
-    return () => sub.remove();
-  }, []);
-
-  // Fetch once at start
-  useEffect(() => {
-    (async () => {
-      setVpn(await getVpnInfo());
-      console.log('Active?', await isVpnActive());
-    })();
-  }, []);
+  const vpn = useVpnStatus(); // null until the first snapshot arrives
 
   return (
     <View>
@@ -79,10 +79,23 @@ export default function App() {
 }
 ```
 
+Prefer imperative APIs? `isVpnActive()`, `getVpnInfo()`, and `onChange()` are also exported:
+
+```ts
+import { isVpnActive, getVpnInfo, onChange } from 'react-native-vpn-listener';
+
+const active = await isVpnActive();
+const info = await getVpnInfo();
+const sub = onChange((next) => console.log('VPN changed:', next));
+// later: sub.remove();
+```
+
 ## 📖 API Reference
 
 ### Methods
 
+- `useVpnStatus(): VpnInfo | null`
+  - React hook returning the current VPN status; re‑renders on every change. `null` until the first snapshot arrives.
 - `isVpnActive(): Promise<boolean>`
   - Returns whether a VPN‑like interface is currently active.
 - `getVpnInfo(): Promise<VpnInfo>`
@@ -92,8 +105,8 @@ export default function App() {
 
 ### Events (semantics)
 
-- Android: fires on system connectivity changes related to VPN.
-- iOS: sampled roughly every ~2s and de‑noised (emits only when fields other than `timestamp` change). Sends one initial snapshot after subscription.
+- Android: fires on `ConnectivityManager` network callbacks (VPN networks and default‑network changes), de‑duplicated so unrelated Wi‑Fi↔cellular transitions don't emit.
+- iOS: fires on `NWPathMonitor` path updates (no polling) and de‑noised (emits only when fields other than `timestamp` change). Sends one initial snapshot after subscription.
 
 ## 🧾 Types
 
@@ -111,10 +124,10 @@ export type VpnType =
 export type VpnInfo = {
   active: boolean;
   type: VpnType; // heuristic (see notes)
-  interfaceName?: string; // e.g., utun0 (iOS), tun0 (Android)
-  localAddress?: string; // local IP if known
-  remoteAddress?: string; // Android best‑effort
-  dns?: string[]; // Android best‑effort; empty on iOS
+  interfaceName: string | null; // e.g., utun4 (iOS), tun0 (Android); null when inactive
+  localAddress: string | null; // local tunnel IP; null when inactive
+  remoteAddress: string | null; // Android best‑effort; always null on iOS
+  dns: string[]; // Android best‑effort; always empty on iOS
   timestamp: number; // ms since epoch
   platform: 'ios' | 'android';
 };
@@ -122,7 +135,8 @@ export type VpnInfo = {
 
 Notes:
 
-- iOS does not populate `dns` or `remoteAddress` (public APIs do not expose them).
+- iOS never populates `dns` or `remoteAddress` (public APIs do not expose them).
+- On iOS, `type` is almost always `'unknown'` when active — every VPN appears as a generic `utun` interface.
 - Android may omit fields depending on device/OS.
 
 ## 🔧 Configuration
@@ -138,14 +152,14 @@ Notes:
 
 ## 🧭 Platform Support
 
-| Platform | Status | Notes                                                     |
-| -------- | ------ | --------------------------------------------------------- |
-| iOS      | ✅     | Public APIs only; sampling ~2s; simulator forced inactive |
-| Android  | ✅     | `ConnectivityManager` callbacks; best‑effort details      |
+| Platform | Status | Notes                                                                 |
+| -------- | ------ | --------------------------------------------------------------------- |
+| iOS      | ✅     | `NWPathMonitor` event‑driven; public APIs only; simulator forced inactive |
+| Android  | ✅     | `ConnectivityManager` callbacks; best‑effort details                  |
 
 ## ⚠️ Limitations
 
-- iOS: To avoid false positives (e.g. iCloud Private Relay / enterprise tunnels), the module requires a VPN‑ish interface (`utun`/`ppp`/`ipsec`) that is UP+RUNNING with a private IPv4. As a result, IPv6‑only VPNs may not be detected.
+- iOS detection is heuristic: a VPN‑ish interface (`utun`/`ppp`/`ipsec`) must be UP+RUNNING with a private/CGNAT IPv4 or a routable (non‑link‑local) IPv6 address. IPv6‑only VPNs are detected; system services that route traffic through a `utun` with a routable address (e.g. some iCloud Private Relay configurations) may register as a VPN.
 - iOS Simulator: always reported as inactive (simulator `utun` can resemble VPN).
 - Android details (DNS, gateway) are best‑effort and may vary by OEM/OS.
 
